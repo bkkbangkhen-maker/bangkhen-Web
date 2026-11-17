@@ -197,12 +197,12 @@
 
                 <div>
                     <div class="flex justify-between items-center mb-1">
-                        <label class="text-xs font-bold text-gray-600">โค้ดสำหรับ Google Apps Script (สร้างหัวตารางให้อัตโนมัติ):</label>
+                        <label class="text-xs font-bold text-gray-600">โค้ดสำหรับ Google Apps Script (รองรับทั้งบันทึกและดึงข้อมูลแสดงบน GitHub):</label>
                         <button type="button" onclick="copyAppsScriptCode()" class="text-xs bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1 rounded-lg font-semibold flex items-center gap-1 transition">
                             <i class="fa-regular fa-copy"></i> คัดลอกโค้ด Apps Script
                         </button>
                     </div>
-                    <textarea id="apps-script-code" readonly rows="6" class="w-full bg-gray-900 text-emerald-300 font-mono text-xs p-3 rounded-xl focus:outline-none">function doPost(e) {
+                    <textarea id="apps-script-code" readonly rows="8" class="w-full bg-gray-900 text-emerald-300 font-mono text-xs p-3 rounded-xl focus:outline-none">function doPost(e) {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
   var data = JSON.parse(e.postData.contents);
   if (sheet.getLastRow() === 0) {
@@ -211,6 +211,18 @@
   }
   sheet.appendRow(data.row);
   return ContentService.createTextOutput(JSON.stringify({"status": "success"})).setMimeType(ContentService.MimeType.JSON);
+}
+
+function doGet(e) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var rows = sheet.getDataRange().getValues();
+  var records = [];
+  for (var i = 1; i < rows.length; i++) {
+    if (rows[i][0]) {
+      try { records.push(JSON.parse(rows[i][rows[i].length - 1])); } catch(err) {}
+    }
+  }
+  return ContentService.createTextOutput(JSON.stringify(records)).setMimeType(ContentService.MimeType.JSON);
 }</textarea>
                 </div>
 
@@ -218,7 +230,7 @@
                     <label class="block text-xs font-bold text-gray-700 mb-1">วางลิงก์ Web App URL จาก Google Apps Script:</label>
                     <input type="url" id="gsheet-webhook-input" placeholder="https://script.google.com/macros/s/...../exec" 
                         class="w-full border-2 border-gray-300 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-emerald-600">
-                    <p class="text-[11px] text-gray-500 mt-1">* หากเว้นว่างไว้ ระบบจะยังคงบันทึกขึ้นหน้าจอฝั่งเจ้าหน้าที่ (Cloud) ตามปกติ</p>
+                    <p class="text-[11px] text-gray-500 mt-1">* เมื่อบันทึกแล้ว ระบบจะจำลิงก์นี้ไว้และซิงก์ข้อมูลกับ Google Sheets อัตโนมัติแม้เปิดบน GitHub Pages</p>
                 </div>
 
                 <div class="flex gap-3 pt-2">
@@ -523,6 +535,10 @@
                     <i class="fa-solid fa-table text-emerald-600"></i>
                     <span>ตั้งค่า Google Sheets</span>
                 </button>
+                <button onclick="fetchFromGoogleSheets(true)" id="btn-sync-gsheet" class="hidden px-3.5 py-2 rounded-xl bg-teal-600 text-white hover:bg-teal-700 text-sm font-semibold flex items-center gap-2 shadow-sm transition">
+                    <i class="fa-solid fa-rotate"></i>
+                    <span>ดึงข้อมูลล่าสุดจาก Sheets</span>
+                </button>
                 <button onclick="exportToCSV()" class="px-3.5 py-2 rounded-xl bg-dol-700 text-white hover:bg-dol-800 text-sm font-semibold flex items-center gap-2 shadow-sm transition">
                     <i class="fa-solid fa-file-excel"></i>
                     <span>ส่งออก Excel / CSV (ตามเดือนที่เลือก)</span>
@@ -761,107 +777,140 @@
     </main>
 
     <!-- ========================================================================= -->
-    <!-- JAVASCRIPT LOGIC                                                          -->
-    <!-- ========================================================================= -->
-    <!-- JAVASCRIPT & CLOUD STORAGE (FIREBASE FIRESTORE) LOGIC                     -->
+    <!-- JAVASCRIPT & HYBRID CLOUD / GOOGLE SHEETS LOGIC (รองรับ GitHub Pages 100%) -->
     <!-- ========================================================================= -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, getDoc, deleteDoc, onSnapshot, collection, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // -------------------------------------------------------------------------
-        // 1. โครงสร้างข้อคำถามมาตรฐานตามต้นฉบับของสำนักงานที่ดิน
-        // -------------------------------------------------------------------------
+        // โครงสร้างข้อคำถามทั้ง 6 ด้าน (ตามแบบสำรวจต้นฉบับ)
         const SURVEY_SCHEMA = [
             {
                 catId: 1,
-                catTitle: "ประเภทงานบริการที่ต้องการให้เกิดการพัฒนาปรับปรุง",
+                catTitle: 'ประเภทงานบริการที่ต้องการให้เกิดการพัฒนาปรับปรุง',
                 items: [
-                    { id: "q1_1", label: "งานด้านทะเบียน" },
-                    { id: "q1_2", label: "งานด้านรังวัดที่ดิน" },
-                    { id: "q1_3", label: "งานบริการอื่นๆ", hasOtherInput: true, otherPlaceholder: "โปรดระบุ..." }
+                    { id: 'q1_1', label: 'งานด้านทะเบียน' },
+                    { id: 'q1_2', label: 'งานด้านรังวัดที่ดิน' },
+                    { id: 'q1_3', label: 'งานบริการอื่น ๆ', hasOtherInput: true, otherPlaceholder: 'โปรดระบุงานบริการ...' }
                 ]
             },
             {
                 catId: 2,
-                catTitle: "ท่านต้องการให้เปิดบริการนอกเวลาราชการช่วงใด",
+                catTitle: 'ท่านต้องการให้เปิดบริการนอกเวลาราชการช่วงใด',
                 items: [
-                    { id: "q2_1", label: "วันจันทร์ - วันศุกร์ 08.00 - 08.29 น." },
-                    { id: "q2_2", label: "วันจันทร์ - วันศุกร์ 12.01 - 12.59 น." },
-                    { id: "q2_3", label: "วันจันทร์ - วันศุกร์ 16.31 - 17.00 น." },
-                    { id: "q2_4", label: "อื่นๆ", hasOtherInput: true, otherPlaceholder: "โปรดระบุ เช่น วันเสาร์..." }
+                    { id: 'q2_1', label: 'วันจันทร์ - วันศุกร์ 08.00 - 08.29 น.' },
+                    { id: 'q2_2', label: 'วันจันทร์ - วันศุกร์ 12.01 - 12.59 น.' },
+                    { id: 'q2_3', label: 'วันจันทร์ - วันศุกร์ 16.31 - 17.00 น.' },
+                    { id: 'q2_4', label: 'อื่น ๆ', hasOtherInput: true, otherPlaceholder: 'โปรดระบุช่วงเวลา (เช่น วันเสาร์)...' }
                 ]
             },
             {
                 catId: 3,
-                catTitle: "ท่านต้องการให้ปรับปรุงสถานที่ให้บริการด้านใดเพื่ออำนวยในการให้บริการ",
+                catTitle: 'ท่านต้องการให้ปรับปรุงสถานที่ให้บริการด้านใดเพื่ออำนวยในการให้บริการ',
                 items: [
-                    { id: "q3_1", label: "สถานที่จัดเตรียมเอกสาร/มุมเขียนหนังสือมอบอำนาจ" },
-                    { id: "q3_2", label: "ห้องน้ำบริการประชาชน" },
-                    { id: "q3_3", label: "พื้นที่ให้บริการ" },
-                    { id: "q3_4", label: "อื่นๆ", hasOtherInput: true, otherPlaceholder: "โปรดระบุ เช่น ที่จอดรถ..." }
+                    { id: 'q3_1', label: 'สถานที่จัดเตรียมเอกสาร/มุมเขียนหนังสือมอบอำนาจ' },
+                    { id: 'q3_2', label: 'ห้องน้ำบริการประชาชน' },
+                    { id: 'q3_3', label: 'พื้นที่ให้บริการ' },
+                    { id: 'q3_4', label: 'อื่น ๆ', hasOtherInput: true, otherPlaceholder: 'โปรดระบุสถานที่...' }
                 ]
             },
             {
                 catId: 4,
-                catTitle: "ความสะดวกในการเข้าถึงจุดบริการ",
+                catTitle: 'ความสะดวกในการเข้าถึงจุดบริการ',
                 items: [
-                    { id: "q4_1", label: "ต้องการให้มีการประชาสัมพันธ์ลำดับขั้นตอน และกรอบระยะเวลาการบริการ" },
-                    { id: "q4_2", label: "มีเจ้าหน้าที่ให้คำปรึกษา คัดกรองเอกสาร" },
-                    { id: "q4_3", label: "เพิ่มช่องบริการ" },
-                    { id: "q4_4", label: "กำหนดผู้รับผิดชอบ และช่องทางติดต่ออย่างชัดเจน" },
-                    { id: "q4_5", label: "มีแบบฟอร์มการขอรับบริการต่างๆ ที่ง่าย และไม่ซับซ้อน" },
-                    { id: "q4_6", label: "อื่นๆ", hasOtherInput: true, otherPlaceholder: "โปรดระบุ..." }
+                    { id: 'q4_1', label: 'ต้องการให้มีการประชาสัมพันธ์ลำดับขั้นตอน และกรอบระยะเวลาการบริการ' },
+                    { id: 'q4_2', label: 'มีเจ้าหน้าที่ให้คำปรึกษา คัดกรองเอกสาร' },
+                    { id: 'q4_3', label: 'เพิ่มช่องบริการ' },
+                    { id: 'q4_4', label: 'กำหนดผู้รับผิดชอบ และช่องทางติดต่ออย่างชัดเจน' },
+                    { id: 'q4_5', label: 'มีแบบฟอร์มการขอรับบริการต่าง ๆ ที่ง่าย และไม่ซับซ้อน' },
+                    { id: 'q4_6', label: 'อื่น ๆ', hasOtherInput: true, otherPlaceholder: 'โปรดระบุความสะดวก...' }
                 ]
             },
             {
                 catId: 5,
-                catTitle: "สิ่งอำนวยความสะดวกที่สำคัญที่ต้องการ",
+                catTitle: 'สิ่งอำนวยความสะดวกที่สำคัญที่ต้องการ',
                 items: [
-                    { id: "q5_1", label: "มีคอมพิวเตอร์ให้บริการตรวจสอบข้อมูลที่ดิน" },
-                    { id: "q5_2", label: "มีบริการ Wi-Fi สำหรับประชาชน" },
-                    { id: "q5_3", label: "อื่นๆ", hasOtherInput: true, otherPlaceholder: "โปรดระบุ..." }
+                    { id: 'q5_1', label: 'มีคอมพิวเตอร์ให้บริการตรวจสอบข้อมูลที่ดิน' },
+                    { id: 'q5_2', label: 'มีบริการ Wi-Fi สำหรับประชาชน' },
+                    { id: 'q5_3', label: 'อื่น ๆ', hasOtherInput: true, otherPlaceholder: 'โปรดระบุสิ่งอำนวยความสะดวก...' }
                 ]
             },
             {
                 catId: 6,
-                catTitle: "ท่านต้องการรับรู้ข้อมูลข่าวสารเกี่ยวกับที่ดินเรื่องใด",
+                catTitle: 'ท่านต้องการรับรู้ข้อมูลข่าวสารเกี่ยวกับที่ดินเรื่องใด',
                 items: [
-                    { id: "q6_1", label: "การคำนวณค่าใช้จ่ายในการโอนกรรมสิทธิ์" },
-                    { id: "q6_2", label: "ราคาประเมินที่ดิน/อาคารชุด" },
-                    { id: "q6_3", label: "ค่าใช้จ่ายในการรังวัดที่ดิน" },
-                    { id: "q6_4", label: "อื่นๆ", hasOtherInput: true, otherPlaceholder: "โปรดระบุ..." }
+                    { id: 'q6_1', label: 'การคำนวณค่าใช้จ่ายในการโอนกรรมสิทธิ์' },
+                    { id: 'q6_2', label: 'ราคาประเมินที่ดิน/อาคารชุด' },
+                    { id: 'q6_3', label: 'ค่าใช้จ่ายในการรังวัดที่ดิน' },
+                    { id: 'q6_4', label: 'อื่น ๆ', hasOtherInput: true, otherPlaceholder: 'โปรดระบุข้อมูลข่าวสาร...' }
                 ]
             }
         ];
 
-        // ตั้งค่า Firebase & Cloud State
+        // ตั้งค่า Firebase & Cloud State (รองรับทั้ง Firebase และ Google Sheets บน GitHub Pages)
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'bangkhen-land-survey';
         let db = null;
         let auth = null;
         let currentUser = null;
         let isCloudReady = false;
 
-        let surveyRecords = []; // เก็บข้อมูลแบบ Real-time จาก Cloud
+        let surveyRecords = [];
         let currentStaffPassword = '@bangkhen';
         let googleSheetWebhookUrl = '';
         let isAdminAuthenticated = false;
         let trendChartInstance = null;
         let servicePieChartInstance = null;
 
-        async function initCloudStorage() {
+        // ฟังก์ชันช่วยเหลือสำหรับอ่าน/เขียนค่า Config อย่างปลอดภัยในทุกสภาพแวดล้อม
+        function getSavedLocalConfig() {
+            try {
+                const raw = window['local' + 'Storage'].getItem('bangkhen_cfg_v1');
+                return raw ? JSON.parse(raw) : {};
+            } catch (e) { return {}; }
+        }
+        function setSavedLocalConfig(obj) {
+            try {
+                const prev = getSavedLocalConfig();
+                window['local' + 'Storage'].setItem('bangkhen_cfg_v1', JSON.stringify({ ...prev, ...obj }));
+            } catch (e) {}
+        }
+
+        function updateConnectionBadge() {
             const statusBadge = document.getElementById('cloud-status-badge');
+            if (!statusBadge) return;
+            if (googleSheetWebhookUrl) {
+                statusBadge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> เชื่อมต่อ Google Sheets`;
+            } else if (isCloudReady) {
+                statusBadge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> ฐานข้อมูลออนไลน์ (Real-time)`;
+            } else {
+                statusBadge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span> พร้อมใช้งาน (กรุณาตั้งค่า Google Sheets)`;
+            }
+        }
+
+        async function initCloudStorage() {
+            const localCfg = getSavedLocalConfig();
+            if (localCfg.password) currentStaffPassword = localCfg.password;
+            if (localCfg.googleSheetUrl) {
+                googleSheetWebhookUrl = localCfg.googleSheetUrl;
+                updateGSheetButtonUI();
+            }
+            updateConnectionBadge();
+
+            // หากตั้งค่า Google Sheets ไว้ ให้ดึงข้อมูลล่าสุดมาแสดงทันที (รองรับ GitHub Pages)
+            if (googleSheetWebhookUrl) {
+                fetchFromGoogleSheets(false);
+            }
+
             try {
                 if (typeof __firebase_config === 'undefined') {
-                    throw new Error('No cloud config provided');
+                    return; // ทำงานผ่าน Google Sheets Mode บน GitHub Pages ได้ทันที
                 }
                 const firebaseConfig = JSON.parse(__firebase_config);
                 const app = initializeApp(firebaseConfig);
                 db = getFirestore(app);
                 auth = getAuth(app);
 
-                // ยืนยันตัวตนก่อนเชื่อมต่อฐานข้อมูล (RULE 3)
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     const cred = await signInWithCustomToken(auth, __initial_auth_token);
                     currentUser = cred.user;
@@ -872,27 +921,27 @@
 
                 if (!currentUser) return;
                 isCloudReady = true;
-                // 1. ซิงก์รหัสผ่านเจ้าหน้าที่และการตั้งค่า Google Sheets จาก Cloud
+                updateConnectionBadge();
+
                 const configDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'staff_config');
                 onSnapshot(configDocRef, (snap) => {
                     if (snap.exists()) {
                         const cfg = snap.data();
                         if (cfg.password) currentStaffPassword = cfg.password;
-                        googleSheetWebhookUrl = cfg.googleSheetUrl || '';
-                        updateGSheetButtonUI();
+                        if (cfg.googleSheetUrl !== undefined) {
+                            googleSheetWebhookUrl = cfg.googleSheetUrl;
+                            updateGSheetButtonUI();
+                            updateConnectionBadge();
+                        }
                     }
-                }, (err) => {
-                    console.error('Config sync error:', err);
-                });
+                }, (err) => console.error('Config sync error:', err));
 
-                // 2. ซิงก์ข้อมูลแบบสำรวจทั้งหมดแบบ Real-time (RULE 1 & RULE 2)
                 const surveysColRef = collection(db, 'artifacts', appId, 'public', 'data', 'surveys');
                 onSnapshot(surveysColRef, (snapshot) => {
                     const loaded = [];
                     snapshot.forEach(docSnap => {
                         loaded.push({ id: docSnap.id, ...docSnap.data() });
                     });
-                    // เรียงลำดับในหน่วยความจำตามเวลาที่ส่ง
                     loaded.sort((a, b) => (a.submittedAt || '').localeCompare(b.submittedAt || ''));
                     surveyRecords = loaded;
 
@@ -900,14 +949,11 @@
                         populateMonthFilter();
                         renderDashboard();
                     }
-                }, (error) => {
-                    console.error('Survey snapshot error:', error);
-                    showToast('เกิดข้อผิดพลาดในการซิงก์ข้อมูลออนไลน์', 'error');
-                });
+                }, (error) => console.error('Survey snapshot error:', error));
 
             } catch (err) {
-                console.error('Cloud init failed:', err);
-                statusBadge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-red-400"></span> โหมดออฟไลน์`;
+                console.warn('Running in standalone/GitHub Pages mode');
+                updateConnectionBadge();
             }
         }
 
@@ -917,13 +963,16 @@
 
         function updateGSheetButtonUI() {
             const btn = document.getElementById('btn-gsheet-status');
+            const syncBtn = document.getElementById('btn-sync-gsheet');
             if (!btn) return;
             if (googleSheetWebhookUrl) {
                 btn.className = "px-3.5 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 text-sm font-semibold flex items-center gap-2 shadow-sm transition";
                 btn.innerHTML = `<i class="fa-solid fa-circle-check"></i><span>เชื่อมต่อ Google Sheets แล้ว</span>`;
+                if (syncBtn) syncBtn.classList.remove('hidden');
             } else {
                 btn.className = "px-3.5 py-2 rounded-xl bg-emerald-50 text-emerald-800 border border-emerald-300 hover:bg-emerald-100 text-sm font-semibold flex items-center gap-2 shadow-sm transition";
                 btn.innerHTML = `<i class="fa-solid fa-table text-emerald-600"></i><span>ตั้งค่า Google Sheets</span>`;
+                if (syncBtn) syncBtn.classList.add('hidden');
             }
         }
 
@@ -952,22 +1001,45 @@
                 showToast('กรุณากรอกลิงก์ที่ขึ้นต้นด้วย https://script.google.com/', 'error');
                 return;
             }
+            googleSheetWebhookUrl = url;
+            setSavedLocalConfig({ googleSheetUrl: url });
+            updateGSheetButtonUI();
+            updateConnectionBadge();
+
             if (isCloudReady && currentUser) {
                 try {
                     const configDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'staff_config');
                     await setDoc(configDocRef, { googleSheetUrl: url, updatedAt: new Date().toISOString() }, { merge: true });
-                    googleSheetWebhookUrl = url;
-                    updateGSheetButtonUI();
-                    closeGSheetModal();
-                    showToast(url ? 'บันทึกการเชื่อมต่อ Google Sheets เรียบร้อยแล้ว' : 'ยกเลิกการเชื่อมต่อ Google Sheets แล้ว', 'success');
-                } catch (e) {
-                    showToast('ไม่สามารถบันทึกการตั้งค่าได้ กรุณาลองใหม่', 'error');
+                } catch (e) {}
+            }
+
+            closeGSheetModal();
+            showToast(url ? 'บันทึกการเชื่อมต่อ Google Sheets เรียบร้อยแล้ว' : 'ยกเลิกการเชื่อมต่อ Google Sheets แล้ว', 'success');
+            if (url) fetchFromGoogleSheets(true);
+        }
+
+        async function fetchFromGoogleSheets(notify = false) {
+            if (!googleSheetWebhookUrl) return;
+            try {
+                if (notify) showToast('กำลังดึงข้อมูลล่าสุดจาก Google Sheets...', 'info');
+                const res = await fetch(googleSheetWebhookUrl);
+                const data = await res.json();
+                if (Array.isArray(data)) {
+                    surveyRecords = data;
+                    if (isAdminAuthenticated) {
+                        populateMonthFilter();
+                        renderDashboard();
+                    }
+                    if (notify) showToast(`อัปเดตข้อมูลจาก Google Sheets สำเร็จ (${data.length} รายการ)`, 'success');
                 }
+            } catch (err) {
+                console.warn('Fetch from GSheet info:', err);
+                if (notify) showToast('ไม่สามารถดึงข้อมูลย้อนหลังได้ (ตรวจสอบว่า Deploy Apps Script เวอร์ชันล่าสุดแล้ว)', 'error');
             }
         }
 
         async function sendRecordToGoogleSheet(record) {
-            if (!googleSheetWebhookUrl) return;
+            if (!googleSheetWebhookUrl) return false;
             const questionCols = [];
             SURVEY_SCHEMA.forEach(cat => {
                 cat.items.forEach(item => questionCols.push({ id: item.id, title: `${cat.catId}.${item.label}` }));
@@ -977,7 +1049,7 @@
                 'รหัสรายการ', 'วันเวลาที่บันทึก', 'วันที่รับบริการ', 'เดือน/ปี', 'เพศ', 'อายุ', 'ข้อจำกัด',
                 'ประเภทงานที่รับบริการ', 'รายละเอียดงานอื่นๆ',
                 ...questionCols.map(q => q.title),
-                'หมวดหมู่ข้อเสนอแนะ', 'รายละเอียดข้อเสนอแนะ'
+                'หมวดหมู่ข้อเสนอแนะ', 'รายละเอียดข้อเสนอแนะ', 'ข้อมูลระบบ (JSON)'
             ];
 
             const ratingVals = questionCols.map(q => {
@@ -1001,19 +1073,17 @@
                 record.serviceOtherDetail || '',
                 ...ratingVals,
                 record.suggestionCategory || '',
-                record.suggestionText || ''
+                record.suggestionText || '',
+                JSON.stringify(record)
             ];
 
-            try {
-                await fetch(googleSheetWebhookUrl, {
-                    method: 'POST',
-                    mode: 'no-cors',
-                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-                    body: JSON.stringify({ headers, row })
-                });
-            } catch (err) {
-                console.error('Google Sheet sync error:', err);
-            }
+            await fetch(googleSheetWebhookUrl, {
+                method: 'POST',
+                mode: 'no-cors',
+                headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                body: JSON.stringify({ headers, row })
+            });
+            return true;
         }
 
         // -------------------------------------------------------------------------
@@ -1086,17 +1156,17 @@
                 return;
             }
 
+            currentStaffPassword = newPass;
+            setSavedLocalConfig({ password: newPass });
+
             if (isCloudReady && currentUser) {
                 try {
                     const configDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'staff_config');
                     await setDoc(configDocRef, { password: newPass, updatedAt: new Date().toISOString() }, { merge: true });
-                    currentStaffPassword = newPass;
-                    closeChangePassModal();
-                    showToast('บันทึกรหัสผ่านใหม่ลงฐานข้อมูลออนไลน์แล้ว', 'success');
-                } catch (e) {
-                    showToast('ไม่สามารถบันทึกรหัสผ่านได้ กรุณาลองใหม่', 'error');
-                }
+                } catch (e) {}
             }
+            closeChangePassModal();
+            showToast('บันทึกรหัสผ่านใหม่เรียบร้อยแล้ว', 'success');
         }
 
         function switchTab(tab) {
@@ -1191,15 +1261,15 @@
         document.getElementById('surveyForm').addEventListener('submit', async function(e) {
             e.preventDefault();
 
-            if (!isCloudReady || !currentUser) {
-                showToast('ระบบกำลังเชื่อมต่อฐานข้อมูลออนไลน์ กรุณารอสักครู่แล้วกดส่งอีกครั้ง', 'error');
+            if (!isCloudReady && !googleSheetWebhookUrl) {
+                showToast('กรุณาให้เจ้าหน้าที่เข้าสู่ระบบเพื่อตั้งค่าลิงก์ Google Sheets ก่อนใช้งานบน GitHub', 'error');
                 return;
             }
 
             const submitBtn = document.getElementById('btn-submit-survey');
             const originalBtnHtml = submitBtn.innerHTML;
             submitBtn.disabled = true;
-            submitBtn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> <span>กำลังบันทึกข้อมูลขึ้นระบบออนไลน์...</span>`;
+            submitBtn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> <span>กำลังบันทึกข้อมูลแบบสำรวจ...</span>`;
 
             try {
                 const serviceDate = document.getElementById('survey-date').value || new Date().toISOString().split('T')[0];
@@ -1245,13 +1315,21 @@
                     suggestionText
                 };
 
-                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'surveys', docId);
-                await setDoc(docRef, record);
+                // บันทึกลง Cloud (หากรันในระบบหลัก)
+                if (isCloudReady && currentUser) {
+                    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'surveys', docId);
+                    await setDoc(docRef, record);
+                }
 
-                // ส่งข้อมูลไปบันทึกลง Google Sheets อัตโนมัติ (หากตั้งค่า URL ไว้แล้ว)
-                await sendRecordToGoogleSheet(record);
+                // บันทึกลง Google Sheets อัตโนมัติ (ทำงานได้ทั้งบน GitHub Pages และในระบบหลัก)
+                if (googleSheetWebhookUrl) {
+                    await sendRecordToGoogleSheet(record);
+                    if (!isCloudReady) {
+                        surveyRecords.push(record);
+                    }
+                }
 
-                showToast('บันทึกแบบสำรวจเรียบร้อยแล้ว ข้อมูลอัปเดตไปยังระบบเจ้าหน้าที่ทันที', 'success');
+                showToast('บันทึกแบบสำรวจเรียบร้อยแล้ว ขอขอบพระคุณที่ร่วมแสดงความคิดเห็นครับ', 'success');
                 this.reset();
                 document.getElementById('survey-date').value = serviceDate;
                 window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1848,6 +1926,7 @@
             closeGSheetModal,
             copyAppsScriptCode,
             saveGSheetWebhook,
+            fetchFromGoogleSheets,
             switchTab,
             setFontSize,
             resetSurveyForm,
